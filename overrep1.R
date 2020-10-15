@@ -1,0 +1,232 @@
+
+dir_out= TREES_DIR
+inputPrefix="tree"
+
+outidx = OUTPUT_PATH
+
+# metadata table columns:
+col_id = 'Newick_label'
+col_select = 'select_'
+col_species= "species"
+
+# clade-specific branches table clumns:
+col_cluster_ids = 'ids'
+col_cluster_reference = 'clades'
+cluster_reference= 'complex corals; robust corals'
+col_cluster_species = 'reference.species'
+cluster_species = 'CniStylophoraP'
+
+# selected species and clades:
+species_for_test=c("CniAcroporaM", "CniAcroporaD" ,"CniStylophoraP")
+species_group = c("Complex","Complex","Robust")
+
+# permutation test options:
+#scoreFunction="reoccurrence_score_" # option1
+scoreFunction="reoccurrenceBySpeciesGroup_score_" # option2
+
+###########################
+
+library(ggplot2)
+
+prefix1 = unique(sapply(list.files(path=dir_out),function(x) regmatches(x,regexpr(paste0(inputPrefix,".OG\\d+"),x,perl=T))[1]))
+prefix1 = prefix1[!is.na(prefix1)]
+
+geneCluster2 = list()
+clusters2 = list()
+metadata2 = list()
+selected_ids=c()
+all_ids=c()
+clusters1_=list()
+for(i in 1:length(prefix1)){
+    cat(prefix1[i],"\n")
+    f_metadata=paste0(dir_out,"/",prefix1[i],".a.ggtree-metadata.txt")
+    f_clusters=paste0(dir_out,"/",prefix1[i],".a.orthologs-clusters.txt")
+    if(file.exists(f_metadata) & file.exists(f_clusters)){
+        err1 = tryCatch(
+            expr= {
+                clusters1 = read.csv(f_clusters,sep="\t",stringsAsFactors=F,header=T,skip='')
+                0
+            },warning = function(w){1},error = function(e){2}
+	    )
+        if(err1==0){
+            clusters1_[[prefix1[i]]] = clusters1
+            clusters2[[prefix1[i]]] = clusters1[  (clusters1[,col_cluster_reference] == cluster_reference)&(clusters1[,col_cluster_species] == cluster_species),]
+            metadata1 = read.csv(f_metadata,sep="\t",stringsAsFactors=F,header=T)
+            metadata2[[prefix1[i]]] = metadata1[,c(col_id,col_select)]
+            all_ids = c(all_ids,metadata1[,col_id])
+            w = metadata1[metadata1[,col_species] %in% species_for_test,col_select]
+            selected_ids = c(selected_ids,w[!is.na(w)])
+            geneCluster1 = data.frame(id=c(),group=c())
+            if(nrow(clusters2[[prefix1[i]]]) > 0){
+                for(j in 1:nrow(clusters2[[prefix1[i]]])){
+                    ids0 = strsplit(clusters2[[prefix1[i]]][j,col_cluster_ids],split="\\s*;\\s*",perl=T)[[1]]
+                    ids1 = data.frame(id = ids0, group = rep(j,times=length(ids0)),stringsAsFactors=F)
+                    geneCluster1 = rbind(geneCluster1,ids1)
+                }
+                geneCluster2[[prefix1[i]]] = geneCluster1
+            }
+        }else{
+            cat("skipped ",prefix1[i]," (cannot read table)\n")
+        }
+    }else{cat("file does not exist !!\n")}
+}
+
+reoccurrence_score_ = function(clusters,ids,minMatch = 2){
+    groupSize = aggregate(clusters$id,by=list(clusters$group),length)
+    names(groupSize) = c('group','size')
+    c = clusters$id %in% ids
+    score1=0
+    matchesPerGroup2=NA
+    if(sum(c) > 0){
+        matchesPerGroup = aggregate(clusters[c,'id'],by=list(clusters[c,'group']),length)
+        names(matchesPerGroup) =  c('group','match')
+        matchesPerGroup1 = merge(matchesPerGroup,groupSize,by='group')
+        matchesPerGroup1$density = apply(matchesPerGroup1[,c('match','size')],1,function(x) x[1]/x[2])
+        z = matchesPerGroup1[matchesPerGroup1$match >= minMatch,]
+        score1 = ifelse(nrow(z) > 0, max(z$density),0)
+        matchesPerGroup2 = matchesPerGroup1[(1:nrow(matchesPerGroup1))[matchesPerGroup1$density == max(matchesPerGroup1$density)][1],]
+    }
+    return(list(score1,matchesPerGroup2,unique(clusters$id[c])))
+}
+
+reoccurrenceBySpeciesGroup_score_ = function(clusters,ids,minMatch = 2,species_for_test1=species_for_test,species_group1=species_group){
+    groupSize = aggregate(clusters$id,by=list(clusters$group),length)
+    names(groupSize) = c('group','size')
+    clusters$species=sapply(clusters$id,function(x) gsub("_.*","",x,perl=T))
+    indices=match(clusters$species,species_for_test1)
+    clusters$speciesGroup=species_group1[indices] # assigning species group name for each species, or NA if the species doesn't apper in species_for_test variables.
+    c = clusters$id %in% ids
+    score1=0
+    matchesPerGroup2=NA
+    if(sum(c) > 0){
+        #matchesPerGroup = aggregate(clusters[c,'id'],by=list(clusters[c,'group']),length)
+        clusters_ = clusters[c,]
+        matchesPerGroup = aggregate(1:nrow(clusters_),by=list(clusters_[,'group']),
+            function(x){u=unique(clusters_[x,"speciesGroup"]); u=u[!is.na(u)]; return(ifelse(length(u)==length(unique(species_group1)),length(u),0))})
+        names(matchesPerGroup) =  c('group','match')
+        matchesPerGroup1 = merge(matchesPerGroup,groupSize,by='group')
+        matchesPerGroup1$density = apply(matchesPerGroup1[,c('match','size')],1,function(x) x[1]/x[2])
+        z = matchesPerGroup1[matchesPerGroup1$match >= minMatch,]
+        score1 = ifelse(nrow(z) > 0, max(z$density),0)
+        matchesPerGroup2 = matchesPerGroup1[(1:nrow(matchesPerGroup1))[matchesPerGroup1$density == max(matchesPerGroup1$density)][1],]
+    }
+    return(list(score1,matchesPerGroup2,unique(clusters$id[c])))
+}
+
+if(scoreFunction == "reoccurrenceBySpeciesGroup_score_"){
+    reoccurrence_score = reoccurrenceBySpeciesGroup_score_
+}else{
+    reoccurrence_score = reoccurrence_score_
+}
+
+reoccurrence_score1 = list()
+reoccurrence_matches=list()
+reoccurrence_obs = data.frame(group=c(), match=c(), size=c(), density=c(), OG=c())
+for(i in 1:length(geneCluster2)){ # visit each gene tree
+    list1 = reoccurrence_score(geneCluster2[[i]],selected_ids,minMatch = 2)
+    reoccurrence_score1[[i]] = list1[[1]]
+    reoccurrence_matches[[i]] =  list1[[3]]
+    if(is.data.frame(list1[[2]])){
+        list1[[2]]$OG = names(geneCluster2)[i]
+        reoccurrence_obs = rbind(reoccurrence_obs,list1[[2]])
+    }
+}
+reoccurrence_scores_observed = unlist(reoccurrence_score1)
+write.table(reoccurrence_obs,file=paste0(outidx,"-reoccurrence_observed.txt"),sep="\t",row.names=F)
+
+reoccurrence_score_expected = list()
+reoccurrence_expect = data.frame(group=c(), match=c(), size=c(), density=c(), OG=c(), permutation_num=c())
+expected1 = c()
+perm=100
+
+genes_for_test = list()
+select_for_test = list()
+for(i in 1:length(species_for_test)){
+    genes_for_test[[i]] = all_ids[grepl(species_for_test[i],all_ids,perl=T)]
+    select_for_test[[i]] = selected_ids[grepl(species_for_test[i],selected_ids,perl=T)]
+    cat(length(select_for_test[[i]]),"\n")
+}
+for(j in 1:perm){
+    cat(j,"\n")
+    rand_ids=c()
+    for(i in 1:length(species_for_test)){
+        rand_ids = c(rand_ids,sample(genes_for_test[[i]],size=length(select_for_test[[i]]),replace=F))
+    }
+    reoccurrence_score_expected0 = list()
+    for(i in 1:length(geneCluster2)){ # visit each gene tree
+        list1 = reoccurrence_score(geneCluster2[[i]],rand_ids,minMatch = 2)
+        reoccurrence_score_expected0[[i]] = list1[[1]]
+        if(is.data.frame(list1[[2]])){
+            list1[[2]]$OG = names(geneCluster2)[i]
+            list1[[2]]$permutation_num = paste0(j," (",perm,")")
+            reoccurrence_expect = rbind(reoccurrence_expect,list1[[2]])
+        }
+    }
+    reoccurrence_score_expected[[j]] = unlist(reoccurrence_score_expected0) 
+    expected1  = c(expected1,sum(reoccurrence_score_expected[[j]]))
+}
+obs1 = sum(reoccurrence_scores_observed)
+p = sum(expected1 >= obs1)/perm
+write.table(reoccurrence_expect,file=paste0(outidx,"-reoccurrence_expected.txt"),sep="\t")
+
+totalClusters1=c()
+for(z in 1:length(geneCluster2)){totalClusters1=c(totalClusters1,length(unique(geneCluster2[[z]]$group)))}
+sum(totalClusters1)
+
+save.image(paste0(outidx,".RData"))
+
+# graphs:
+
+reoccurrence_obs2 = reoccurrence_obs[reoccurrence_obs$match >= 0,]
+reoccurrence_obs2$permutation_num='0'
+reoccurrence_obs2$experiment='observed'
+reoccurrence_expect2 = reoccurrence_expect[reoccurrence_expect$match >= 0,]
+reoccurrence_expect2$experiment='permutation'
+reoccurrence2=rbind(reoccurrence_obs2,reoccurrence_expect2)
+reoccurrence2$density_ = sapply(reoccurrence2$density,function(x) ifelse(x>0.3,0.3,x))
+q = quantile(reoccurrence_obs2[reoccurrence_obs2$match > 1,'density'],0.1)
+if(scoreFunction == "reoccurrence_score_"){cutoff1=2}else{cutoff1=1}
+reoccurrence2$enrichedClade = apply(reoccurrence2[,c('match','density')],1,function(x) ifelse((x[1]>cutoff1) & (x[2]>q),1,0))
+
+reoccurrence2[reoccurrence2$permutation_num==0 & reoccurrence2$match>cutoff1,]
+
+gg1 = ggplot(reoccurrence2,aes(x=as.factor(experiment),y=match,color=density_,alpha=0.05))
+gg1 = gg1 + geom_jitter(height=0.05,width=0.25) + scale_y_continuous(breaks =0:9) + scale_color_gradient2(low='green',mid='black',high='red',midpoint=0.1)
+pdf(paste0(outidx,"_barplot.pdf"))
+gg1 + theme_bw()
+dev.off()
+
+gg2 = ggplot(reoccurrence2,aes(x=enrichedClade,group=as.factor(experiment),color=experiment))
+gg2 = gg2 + geom_histogram(aes(y=..density..),alpha=0.5, position="identity",bins=2,fill=NA)
+gg2 = gg2 + xlab(paste0("enriched clade (> ",cutoff1," known genes in clade, high quantile density)"))
+pdf(paste0(outidx,"_hist.pdf"))
+gg2 + theme_bw()
+dev.off()
+
+gg2 = ggplot(reoccurrence2,aes(group=as.factor(experiment),color=experiment))
+gg2 = gg2 +  geom_freqpoly(aes(x=match, after_stat(density)),alpha=0.5)
+gg3 = ggplot(reoccurrence2[reoccurrence2$match>1,],aes(group=as.factor(experiment),color=experiment))
+gg3 = gg3 +  geom_freqpoly(aes(x=density, after_stat(density)),alpha=0.5)
+pdf(paste0(outidx,"_more-tests.pdf"))
+gg2 = gg2 + xlab("count of SOM in branch)")
+gg2 + theme_bw()
+gg3 = gg3 + xlab("density of SOM in branch with >=2 occurences)")
+gg3 + theme_bw()
+dev.off()
+
+reoccurrence_obs3 = aggregate(reoccurrence_obs2[,c('match')],by=list(reoccurrence_obs2$match),length)
+names(reoccurrence_obs3) = c('sekeltal_genes_count_in_cluster','clusters')
+reoccurrence_obs3$experiment = 'observed'
+reoccurrence_obs3$clusters_count = reoccurrence_obs3$clusters
+
+reoccurrence_expect3 = aggregate(reoccurrence_expect2[,c('match')],by=list(reoccurrence_expect2$match),length)
+names(reoccurrence_expect3) = c('sekeltal_genes_count_in_cluster','clusters')
+reoccurrence_expect3$experiment = 'permutation-test'
+reoccurrence_expect3$clusters_count = reoccurrence_expect3$clusters/100
+
+reoccurrence3 = rbind(reoccurrence_obs3,reoccurrence_expect3)
+reoccurrence3 = reoccurrence3[reoccurrence3$sekeltal_genes_count_in_cluster  > 1,]
+
+write.table(reoccurrence3,file=paste0(outidx,"-stat1.txt"),sep="\t")
+
+save.image(paste0(outidx,".RData"))
